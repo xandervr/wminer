@@ -9,6 +9,7 @@ from math import floor
 import argparse
 import threading
 import signal
+import multiprocessing
 
 MAX_NONCE = 100000000000
 
@@ -107,7 +108,8 @@ class Miner:
 
     def mineBlock(self, template: str, transactions, timestamp, start_nonce=1, end_nonce=MAX_NONCE):
         self.current_previous_hash = self.previous_hash
-        print(f"Mining block with previous hash {self.current_previous_hash} NONCE: {start_nonce} - {end_nonce}")
+        print(
+            f"Mining block with previous hash {self.current_previous_hash} TS: {timestamp} NONCE: {start_nonce} - {end_nonce}")
         nonce = start_nonce
         start = time()
         hash_count = 0
@@ -191,18 +193,8 @@ class Miner:
             txs = self.getTransactions()
             timestamp = int(time())
             (template, chosenTxs) = self.assembleBlock(txs, timestamp)
-            current_nonce = 1
-            split_nonce = MAX_NONCE / self.threads
-            threads = []
-            for i in range(self.threads):
-                t = threading.Thread(target=self.mineBlock, args=(template, chosenTxs,
-                                                                  timestamp, current_nonce, current_nonce+split_nonce))
-                t.start()
-
-                threads.append(t)
-                current_nonce += split_nonce
-            for t in range(len(threads)):
-                threads[t].join()
+            self.mineBlock(
+                template, chosenTxs, timestamp)
         self.pollT.join()
 
     def signal_handler(self, sig, frame):
@@ -218,4 +210,11 @@ parser.add_argument('--threads', type=int, required=False, default=1, help='Amou
 args = parser.parse_args()
 
 m = Miner(args.address, args.host, args.port, threads=args.threads)
-m.startMiner()
+procs = []
+for i in range(args.threads):
+    p = multiprocessing.Process(target=m.startMiner)
+    procs.append(p)
+    p.start()
+    sleep(5)
+for proc in procs:
+    proc.join()
