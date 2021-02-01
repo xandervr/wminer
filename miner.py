@@ -61,7 +61,8 @@ class Miner:
             'signature': '',
             'pubkey': ''
         }
-        self.block_size -= sys.getsizeof(coinbaseTransaction) + sys.getsizeof(float)
+        self.block_size -= sys.getsizeof(coinbaseTransaction) + \
+            sys.getsizeof(float)
         while idx < len(transactions) and self.block_size >= sys.getsizeof(coinbaseTransaction) and not self.stop_threads:
             tx = transactions[idx]
             totalFee += tx['fee']
@@ -155,7 +156,8 @@ class Miner:
                 print(f"[CONNECTED] {self.node_host}:{self.node_port}")
             return info
         except Exception as e:
-            print(f"[ERROR] Error connecting to {self.node_host}:{self.node_port}")
+            print(
+                f"[ERROR] Error connecting to {self.node_host}:{self.node_port}")
             # print(e)
 
     def sendBlock(self, json: bytes):
@@ -203,18 +205,23 @@ class Miner:
 
 
 parser = argparse.ArgumentParser(description='Wminer for WSB blockchain')
-parser.add_argument('--address', type=str, required=True, help='Wallet address')
-parser.add_argument('--host', type=str, required=False, default='localhost', help='Node host')
-parser.add_argument('--port', type=int, required=False, default=8000, help='Wallet port')
-parser.add_argument('--threads', type=int, required=False, default=1, help='Amount of threads to mine')
+parser.add_argument('--address', type=str,
+                    required=True, help='Wallet address')
+parser.add_argument('--host', type=str, required=False,
+                    default='localhost', help='Node host')
+parser.add_argument('--port', type=int, required=False,
+                    default=8000, help='Wallet port')
+parser.add_argument('--threads', type=int, required=False,
+                    default=1, help='Amount of threads to mine')
 args = parser.parse_args()
 
-m = Miner(args.address, args.host, args.port, threads=args.threads)
-procs = []
-for i in range(args.threads):
-    p = multiprocessing.Process(target=m.startMiner)
-    procs.append(p)
-    p.start()
-    sleep(5)
-for proc in procs:
-    proc.join()
+if __name__ == '__main__':
+    m = Miner(args.address, args.host, args.port, threads=args.threads)
+    procs = []
+    for i in range(args.threads):
+        p = multiprocessing.Process(target=m.startMiner)
+        procs.append(p)
+        p.start()
+        sleep(5)
+    for proc in procs:
+        proc.join()
