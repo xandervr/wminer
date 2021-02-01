@@ -4,9 +4,11 @@ import json
 import sys
 from models.block import Block
 from models.helpers import generateMerkleRoot
-from time import time
+from time import time, sleep
 from math import floor
 import argparse
+import threading
+import signal
 
 MAX_NONCE = 100000000000
 
@@ -18,15 +20,20 @@ def littleEndian(string):
 
 
 class Miner:
-    def __init__(self, miner_address: str, node_host: str, node_port: int):
+    def __init__(self, miner_address: str, node_host: str, node_port: int, threads=1):
         self.version = ''
         self.previous_hash = ''
+        self.current_previous_hash = ''
         self.difficulty = ''
         self.block_size = 512000
         self.block_reward = 0
         self.miner_address = miner_address
         self.node_host = node_host
         self.node_port = node_port
+        self.threads = threads
+        self.mining_threads = []
+        self.stop_threads = False
+        signal.signal(signal.SIGINT, self.signal_handler)
         pass
 
     def loadChainInfo(self, version: str, previous_hash: str, difficulty: int, block_size: int, block_reward: int):
@@ -36,11 +43,10 @@ class Miner:
         self.block_size = block_size
         self.block_reward = block_reward
 
-    def generateBaseString(self, merkle_root):
-        return self.version + littleEndian(self.previous_hash) + littleEndian(merkle_root) + littleEndian(
-            hex(self.difficulty))
+    def generateBaseString(self, merkle_root, timestamp):
+        return self.version + littleEndian(self.previous_hash) + littleEndian(merkle_root) + hex(timestamp) + hex(self.difficulty)
 
-    def assembleBlock(self, transactions):
+    def assembleBlock(self, transactions, timestamp):
         idx = 0
         totalFee = 0
         chosenTransactions = []
@@ -55,7 +61,7 @@ class Miner:
             'pubkey': ''
         }
         self.block_size -= sys.getsizeof(coinbaseTransaction) + sys.getsizeof(float)
-        while idx < len(transactions) and self.block_size >= sys.getsizeof(coinbaseTransaction):
+        while idx < len(transactions) and self.block_size >= sys.getsizeof(coinbaseTransaction) and not self.stop_threads:
             tx = transactions[idx]
             totalFee += tx['fee']
             self.block_size -= sys.getsizeof(tx)
@@ -64,7 +70,7 @@ class Miner:
         coinbaseTransaction['amount'] = self.block_reward + totalFee
         chosenTransactions.insert(0, coinbaseTransaction)
         merkle_root = generateMerkleRoot(chosenTransactions)
-        base_string = self.generateBaseString(merkle_root)
+        base_string = self.generateBaseString(merkle_root, timestamp)
         return (base_string, chosenTransactions)
 
     def calculateHashrate(self, hashes, time):
@@ -86,12 +92,27 @@ class Miner:
 
         print(formatted, end='\r')
 
-    def mineBlock(self, template: str, transactions):
-        nonce = 1
+    def pollChainInfo(self):
+        while not self.stop_threads:
+            chain_info = self.getChainInfo()
+            if chain_info is None:
+                continue
+            self.loadChainInfo(
+                chain_info['version'],
+                chain_info['previous_hash'],
+                chain_info['difficulty'],
+                chain_info['block_size'],
+                chain_info['block_reward'])
+            sleep(30)
+
+    def mineBlock(self, template: str, transactions, timestamp, start_nonce=1, end_nonce=MAX_NONCE):
+        self.current_previous_hash = self.previous_hash
+        print(f"Mining block with previous hash {self.current_previous_hash} NONCE: {start_nonce} - {end_nonce}")
+        nonce = start_nonce
         start = time()
         hash_count = 0
-        while nonce < MAX_NONCE:
-            hash = sha256(f"{template}{littleEndian(hex(nonce))}".encode('utf-8')).hexdigest()
+        while nonce < end_nonce and self.current_previous_hash == self.previous_hash and not self.stop_threads:
+            hash = sha256(f"{template}{nonce}".encode('utf-8')).hexdigest()
             hash_count += 1
             intermediate_time = time() - start
             self.calculateHashrate(hash_count, intermediate_time)
@@ -100,7 +121,8 @@ class Miner:
                 print(f"FOUND HASH: {hash} NONCE: {nonce} in {end} seconds")
                 block = {
                     "transactions": transactions,
-                    "nonce": nonce
+                    "nonce": nonce,
+                    "timestamp": timestamp
                 }
                 self.sendBlock(json.dumps(block))
                 break
@@ -152,8 +174,11 @@ class Miner:
             return False
 
     def startMiner(self):
+        self.stop_threads = False
+        self.pollT = threading.Thread(target=self.pollChainInfo)
+        self.pollT.start()
         chain_info = self.getChainInfo(True)
-        while True:
+        while not self.stop_threads:
             chain_info = self.getChainInfo()
             if chain_info is None:
                 break
@@ -163,16 +188,34 @@ class Miner:
                 chain_info['difficulty'],
                 chain_info['block_size'],
                 chain_info['block_reward'])
-            txs = m.getTransactions()
-            (template, chosenTxs) = self.assembleBlock(txs)
-            self.mineBlock(template, chosenTxs)
+            txs = self.getTransactions()
+            timestamp = int(time())
+            (template, chosenTxs) = self.assembleBlock(txs, timestamp)
+            current_nonce = 1
+            split_nonce = MAX_NONCE / self.threads
+            threads = []
+            for i in range(self.threads):
+                t = threading.Thread(target=self.mineBlock, args=(template, chosenTxs,
+                                                                  timestamp, current_nonce, current_nonce+split_nonce))
+                t.start()
+
+                threads.append(t)
+                current_nonce += split_nonce
+            for t in range(len(threads)):
+                threads[t].join()
+        self.pollT.join()
+
+    def signal_handler(self, sig, frame):
+        self.stop_threads = True
+        sys.exit(1)
 
 
 parser = argparse.ArgumentParser(description='Wminer for WSB blockchain')
 parser.add_argument('--address', type=str, required=True, help='Wallet address')
 parser.add_argument('--host', type=str, required=False, default='localhost', help='Node host')
 parser.add_argument('--port', type=int, required=False, default=8000, help='Wallet port')
+parser.add_argument('--threads', type=int, required=False, default=1, help='Amount of threads to mine')
 args = parser.parse_args()
 
-m = Miner(args.address, args.host, args.port)
+m = Miner(args.address, args.host, args.port, threads=args.threads)
 m.startMiner()
